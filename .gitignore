@@ -1,0 +1,14 @@
+# Rust / Cargo
+/target
+Cargo.lock.bak
+
+# Node / pnpm / Vite
+node_modules/
+web/dist/
+web/src/wasm/
+*.tsbuildinfo
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/

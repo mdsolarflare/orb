@@ -1,0 +1,12 @@
+[package]
+name = "orb-docx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+orb-ir.workspace = true
+zip.workspace = true
+quick-xml.workspace = true
+base64.workspace = true
+thiserror.workspace = true

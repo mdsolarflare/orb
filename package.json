@@ -1,0 +1,13 @@
+{
+  "name": "orb-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "dev": "pnpm --dir web dev",
+    "build": "pnpm build:wasm && pnpm --dir web build",
+    "build:web": "pnpm --dir web build",
+    "test": "pnpm --dir web test",
+    "test:all": "cargo test --workspace && pnpm --dir web test"
+  }
+}

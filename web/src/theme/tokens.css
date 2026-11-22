@@ -1,0 +1,64 @@
+/*
+ * Orb Design System — Strict 6-Color Derived Token Sheet
+ *
+ * ZERO hardcoded colors are permitted in CSS.
+ * All tones are derived via color-mix() fades between the 6 active theme tokens:
+ *   --orb-base, --orb-ink, --orb-accent, --orb-positive, --orb-warning, --orb-danger
+ */
+
+:root {
+  /* Derived Neutral Surfaces */
+  --orb-surface-1: color-mix(in oklch, var(--orb-base) 96%, var(--orb-ink));
+  --orb-surface-2: color-mix(in oklch, var(--orb-base) 91%, var(--orb-ink));
+  --orb-surface-3: color-mix(in oklch, var(--orb-base) 85%, var(--orb-ink));
+  --orb-stage: color-mix(in oklch, var(--orb-base) 90%, var(--orb-ink));
+  --orb-paper: var(--orb-base);
+
+  /* Derived Borders & Dividers */
+  --orb-border-subtle: color-mix(in oklch, var(--orb-base) 86%, var(--orb-ink));
+  --orb-border: color-mix(in oklch, var(--orb-base) 79%, var(--orb-ink));
+  --orb-border-strong: color-mix(in oklch, var(--orb-base) 68%, var(--orb-ink));
+
+  /* Derived Text Tones */
+  --orb-ink-secondary: color-mix(in oklch, var(--orb-ink) 74%, var(--orb-base));
+  --orb-ink-muted: color-mix(in oklch, var(--orb-ink) 54%, var(--orb-base));
+  --orb-ink-faint: color-mix(in oklch, var(--orb-ink) 38%, var(--orb-base));
+
+  /* Derived Semantic Fades */
+  --orb-accent-soft: color-mix(in oklch, var(--orb-accent) 13%, var(--orb-base));
+  --orb-accent-hover: color-mix(in oklch, var(--orb-accent) 22%, var(--orb-base));
+  --orb-accent-border: color-mix(in oklch, var(--orb-accent) 42%, var(--orb-base));
+  --orb-accent-strong: color-mix(in oklch, var(--orb-accent) 88%, var(--orb-ink));
+
+  --orb-positive-soft: color-mix(in oklch, var(--orb-positive) 13%, var(--orb-base));
+  --orb-positive-border: color-mix(in oklch, var(--orb-positive) 38%, var(--orb-base));
+
+  --orb-warning-soft: color-mix(in oklch, var(--orb-warning) 14%, var(--orb-base));
+  --orb-warning-border: color-mix(in oklch, var(--orb-warning) 40%, var(--orb-base));
+
+  --orb-danger-soft: color-mix(in oklch, var(--orb-danger) 13%, var(--orb-base));
+  --orb-danger-border: color-mix(in oklch, var(--orb-danger) 40%, var(--orb-base));
+
+  /* Shadows derived strictly from --orb-ink fade */
+  --orb-shadow-sm: 0 1px 2px color-mix(in oklch, var(--orb-ink) 8%, transparent);
+  --orb-shadow-md: 0 4px 16px color-mix(in oklch, var(--orb-ink) 10%, transparent),
+    0 1px 3px color-mix(in oklch, var(--orb-ink) 6%, transparent);
+  --orb-shadow-sheet: 0 12px 32px color-mix(in oklch, var(--orb-ink) 12%, transparent),
+    0 2px 6px color-mix(in oklch, var(--orb-ink) 7%, transparent);
+
+  /* Typography */
+  --orb-font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', system-ui, sans-serif;
+  --orb-font-doc: 'Charter', 'Iowan Old Style', Georgia, 'Liberation Serif', serif;
+  --orb-font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+
+  /* Geometry & Motion */
+  --orb-radius-sm: 5px;
+  --orb-radius-md: 8px;
+  --orb-radius-lg: 12px;
+  --orb-toolbar-height: 48px;
+  --orb-statusbar-height: 28px;
+  --orb-sidebar-width: 264px;
+  --orb-inspector-width: 344px;
+  --orb-transition: 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
