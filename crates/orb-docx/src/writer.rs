@@ -30,8 +30,7 @@ pub fn write_docx(doc: &DocumentIr) -> Result<Vec<u8>, DocxError> {
         },
         PendingRel {
             id: "rId2".into(),
-            rel_type:
-                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering",
+            rel_type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering",
             target: "numbering.xml".into(),
             external: false,
         },
@@ -99,7 +98,12 @@ pub fn write_docx(doc: &DocumentIr) -> Result<Vec<u8>, DocxError> {
         let mut zip = ZipWriter::new(&mut buf);
         let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
-        write_zip_entry(&mut zip, "[Content_Types].xml", content_types_xml.as_bytes(), opts)?;
+        write_zip_entry(
+            &mut zip,
+            "[Content_Types].xml",
+            content_types_xml.as_bytes(),
+            opts,
+        )?;
         write_zip_entry(&mut zip, "_rels/.rels", ROOT_RELS_XML.as_bytes(), opts)?;
         write_zip_entry(&mut zip, "docProps/core.xml", core_xml.as_bytes(), opts)?;
         write_zip_entry(
@@ -109,7 +113,12 @@ pub fn write_docx(doc: &DocumentIr) -> Result<Vec<u8>, DocxError> {
             opts,
         )?;
         write_zip_entry(&mut zip, "word/styles.xml", STYLES_XML.as_bytes(), opts)?;
-        write_zip_entry(&mut zip, "word/numbering.xml", NUMBERING_XML.as_bytes(), opts)?;
+        write_zip_entry(
+            &mut zip,
+            "word/numbering.xml",
+            NUMBERING_XML.as_bytes(),
+            opts,
+        )?;
         write_zip_entry(&mut zip, "word/document.xml", document_xml.as_bytes(), opts)?;
 
         for media in &media_files {
@@ -147,16 +156,7 @@ fn write_block_xml(
     match &block.kind {
         BlockKind::Heading { level, runs, align } => {
             let style = format!("Heading{}", (*level).clamp(1, 6));
-            write_paragraph_xml(
-                runs,
-                Some(&style),
-                *align,
-                None,
-                0,
-                out,
-                rels,
-                next_rid,
-            );
+            write_paragraph_xml(runs, Some(&style), *align, None, 0, out, rels, next_rid);
         }
         BlockKind::Paragraph {
             runs,
@@ -179,10 +179,7 @@ fn write_block_xml(
             for item in items {
                 let mut runs = item.runs.clone();
                 if let Some(checked) = item.checked {
-                    runs.insert(
-                        0,
-                        InlineRun::plain(if checked { "[x] " } else { "[ ] " }),
-                    );
+                    runs.insert(0, InlineRun::plain(if checked { "[x] " } else { "[ ] " }));
                 }
                 write_paragraph_xml(
                     &runs,
@@ -230,21 +227,20 @@ fn write_block_xml(
                         out.push_str(&format!(r#"<w:gridSpan w:val="{}"/>"#, cell.col_span));
                     }
                     out.push_str("</w:tcPr>");
-                    if cell.blocks.is_empty() {
+                    for cb in &cell.blocks {
+                        write_block_xml(
+                            cb,
+                            doc,
+                            out,
+                            rels,
+                            media_files,
+                            next_rid,
+                            next_docpr,
+                            None,
+                        );
+                    }
+                    if !out.ends_with("</w:p>") && !out.ends_with("<w:p/>") {
                         out.push_str("<w:p/>");
-                    } else {
-                        for cb in &cell.blocks {
-                            write_block_xml(
-                                cb,
-                                doc,
-                                out,
-                                rels,
-                                media_files,
-                                next_rid,
-                                next_docpr,
-                                None,
-                            );
-                        }
                     }
                     out.push_str("</w:tc>");
                 }
@@ -267,9 +263,14 @@ fn write_block_xml(
             }
         }
         BlockKind::CodeBlock { code, .. } => {
-            for line in code.lines() {
+            for line in code.split('\n') {
+                let runs = if line.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![InlineRun::plain(line)]
+                };
                 write_paragraph_xml(
-                    &[InlineRun::plain(line)],
+                    &runs,
                     Some("Code"),
                     TextAlign::Left,
                     None,
@@ -336,14 +337,11 @@ fn write_block_xml(
             out.push_str(r#"<w:p><w:r><w:br w:type="page"/></w:r></w:p>"#);
         }
         BlockKind::Footnote { label, blocks } => {
-            let mut text = format!("[{label}] ");
-            for b in blocks {
-                if let BlockKind::Paragraph { runs, .. } = &b.kind {
-                    text.push_str(&orb_ir::runs_plain_text(runs));
-                }
-            }
+            let mut combined: Vec<InlineRun> = vec![InlineRun::plain(format!("[{label}] "))];
+            let mut had_any = false;
+            append_footnote_runs(blocks, &mut combined, &mut had_any);
             write_paragraph_xml(
-                &[InlineRun::plain(text)],
+                &combined,
                 None,
                 TextAlign::Left,
                 None,
@@ -352,6 +350,77 @@ fn write_block_xml(
                 rels,
                 next_rid,
             );
+        }
+    }
+}
+
+fn append_footnote_runs(blocks: &[Block], out: &mut Vec<InlineRun>, had_any: &mut bool) {
+    for b in blocks {
+        match &b.kind {
+            BlockKind::Paragraph { runs, .. } | BlockKind::Heading { runs, .. } => {
+                if !runs.is_empty() {
+                    if *had_any {
+                        out.push(InlineRun::plain(" "));
+                    }
+                    out.extend(runs.iter().cloned());
+                    *had_any = true;
+                }
+            }
+            BlockKind::List { items, .. } => {
+                for item in items {
+                    if !item.runs.is_empty() {
+                        if *had_any {
+                            out.push(InlineRun::plain("; "));
+                        }
+                        out.extend(item.runs.iter().cloned());
+                        *had_any = true;
+                    }
+                    if !item.children.is_empty() {
+                        append_footnote_runs(&item.children, out, had_any);
+                    }
+                }
+            }
+            BlockKind::CodeBlock { code, .. } => {
+                let trimmed = code.trim();
+                if !trimmed.is_empty() {
+                    if *had_any {
+                        out.push(InlineRun::plain(" "));
+                    }
+                    out.push(InlineRun {
+                        text: trimmed.replace('\n', " "),
+                        style: orb_ir::TextStyle {
+                            code: true,
+                            ..Default::default()
+                        },
+                    });
+                    *had_any = true;
+                }
+            }
+            BlockKind::BlockQuote { blocks: inner }
+            | BlockKind::Footnote { blocks: inner, .. } => {
+                append_footnote_runs(inner, out, had_any);
+            }
+            BlockKind::Table { rows } => {
+                for row in rows {
+                    for cell in &row.cells {
+                        append_footnote_runs(&cell.blocks, out, had_any);
+                    }
+                }
+            }
+            BlockKind::Image { alt, caption, .. } => {
+                let label = caption
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(alt.as_str());
+                if !label.is_empty() {
+                    if *had_any {
+                        out.push(InlineRun::plain(" "));
+                    }
+                    out.push(InlineRun::plain(label));
+                    *had_any = true;
+                }
+            }
+            BlockKind::HorizontalRule | BlockKind::PageBreak => {}
         }
     }
 }
@@ -368,7 +437,8 @@ fn write_paragraph_xml(
     next_rid: &mut usize,
 ) {
     out.push_str("<w:p>");
-    let has_ppr = style_id.is_some() || align != TextAlign::Left || num.is_some() || indent_level > 0;
+    let has_ppr =
+        style_id.is_some() || align != TextAlign::Left || num.is_some() || indent_level > 0;
     if has_ppr {
         out.push_str("<w:pPr>");
         if let Some(style) = style_id {
@@ -394,18 +464,27 @@ fn write_paragraph_xml(
 
     for run in runs {
         if let Some(href) = &run.style.href {
-            let rid = format!("rId{}", *next_rid);
-            *next_rid += 1;
-            rels.push(PendingRel {
-                id: rid.clone(),
-                rel_type:
-                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
-                target: href.clone(),
-                external: true,
-            });
-            out.push_str(&format!(r#"<w:hyperlink r:id="{rid}">"#));
-            write_run_xml(run, out);
-            out.push_str("</w:hyperlink>");
+            if let Some(anchor) = href.strip_prefix('#') {
+                out.push_str(&format!(
+                    r#"<w:hyperlink w:anchor="{}">"#,
+                    escape_xml(anchor)
+                ));
+                write_run_xml(run, out);
+                out.push_str("</w:hyperlink>");
+            } else {
+                let rid = format!("rId{}", *next_rid);
+                *next_rid += 1;
+                rels.push(PendingRel {
+                    id: rid.clone(),
+                    rel_type:
+                        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                    target: href.clone(),
+                    external: true,
+                });
+                out.push_str(&format!(r#"<w:hyperlink r:id="{rid}">"#));
+                write_run_xml(run, out);
+                out.push_str("</w:hyperlink>");
+            }
         } else {
             write_run_xml(run, out);
         }
@@ -511,6 +590,9 @@ fn build_content_types_xml(media: &[PendingMedia]) -> String {
     if has_ext(".svg") {
         extras.push_str(r#"<Default Extension="svg" ContentType="image/svg+xml"/>"#);
     }
+    if has_ext(".webp") {
+        extras.push_str(r#"<Default Extension="webp" ContentType="image/webp"/>"#);
+    }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -531,6 +613,7 @@ fn ext_from_mime(mime: &str) -> &'static str {
         "image/jpeg" => "jpg",
         "image/gif" => "gif",
         "image/svg+xml" => "svg",
+        "image/webp" => "webp",
         _ => "png",
     }
 }
@@ -553,7 +636,7 @@ fn escape_xml(input: &str) -> String {
 const ROOT_RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
 </Relationships>"#;
 
 const STYLES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

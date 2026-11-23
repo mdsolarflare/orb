@@ -65,6 +65,10 @@ class OrbWorkerClient {
     return this.call<GeneratedSamplePayload>({ method: 'generateSample', sampleId });
   }
 
+  createBlankDocument(title?: string): Promise<OpenedDocument> {
+    return this.call<OpenedDocument>({ method: 'createBlankDocument', title });
+  }
+
   openDocument(
     bytes: Uint8Array,
     filename?: string,

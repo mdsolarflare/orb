@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build:wasm": "bash ../scripts/build-wasm.sh",
+    "build:wasm": "cargo build --manifest-path ../Cargo.toml -p orb-wasm --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm ../target/wasm32-unknown-unknown/release/orb_wasm.wasm",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",

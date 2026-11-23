@@ -825,6 +825,37 @@ textarea {
   border: 1px solid var(--orb-border-subtle);
 }
 
+.orb-footnote-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0.8em 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--orb-border);
+  color: var(--orb-ink-muted);
+  font-size: 0.9em;
+}
+
+.orb-footnote-label {
+  font-family: var(--orb-font-mono);
+  font-size: 0.85em;
+  color: var(--orb-ink-faint);
+  flex-shrink: 0;
+}
+
+.orb-footnote-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.orb-footnote-body > p:first-child {
+  margin-top: 0;
+}
+
+.orb-footnote-body > p:last-child {
+  margin-bottom: 0;
+}
+
 /* Editable IR Blocks */
 
 .orb-edit-block {

@@ -59,9 +59,28 @@ mod tests {
                             ..Default::default()
                         },
                     ),
+                    InlineRun::plain(" or "),
+                    InlineRun::styled(
+                        "Appendix",
+                        TextStyle {
+                            href: Some("#appendix".into()),
+                            ..Default::default()
+                        },
+                    ),
                 ],
                 align: TextAlign::Left,
                 indent_level: 0,
+            },
+        });
+        doc.blocks.push(Block {
+            id: "hr1".into(),
+            kind: BlockKind::HorizontalRule,
+        });
+        doc.blocks.push(Block {
+            id: "code1".into(),
+            kind: BlockKind::CodeBlock {
+                language: None,
+                code: "fn a() {}\n\nfn b() {}".into(),
             },
         });
         doc.blocks.push(Block {
@@ -184,9 +203,38 @@ mod tests {
         assert_eq!(parsed.metadata.author.as_deref(), Some("Orb Author"));
         assert_eq!(parsed.outline.len(), 1);
         assert_eq!(parsed.outline[0].title, "Executive Summary");
-        assert!(parsed.blocks.iter().any(|b| matches!(b.kind, BlockKind::List { ordered: false, .. })));
-        assert!(parsed.blocks.iter().any(|b| matches!(b.kind, BlockKind::Table { .. })));
-        assert!(parsed.blocks.iter().any(|b| matches!(b.kind, BlockKind::Image { .. })));
+        assert!(
+            parsed
+                .blocks
+                .iter()
+                .any(|b| matches!(b.kind, BlockKind::HorizontalRule))
+        );
+        assert!(parsed.blocks.iter().any(|b| matches!(
+            &b.kind,
+            BlockKind::CodeBlock { code, .. } if code == "fn a() {}\n\nfn b() {}"
+        )));
+        assert!(parsed.blocks.iter().any(|b| matches!(
+            &b.kind,
+            BlockKind::Paragraph { runs, .. } if runs.iter().any(|r| r.style.href.as_deref() == Some("#appendix"))
+        )));
+        assert!(
+            parsed
+                .blocks
+                .iter()
+                .any(|b| matches!(b.kind, BlockKind::List { ordered: false, .. }))
+        );
+        assert!(
+            parsed
+                .blocks
+                .iter()
+                .any(|b| matches!(b.kind, BlockKind::Table { .. }))
+        );
+        assert!(
+            parsed
+                .blocks
+                .iter()
+                .any(|b| matches!(b.kind, BlockKind::Image { .. }))
+        );
         assert_eq!(parsed.assets.len(), 1);
     }
 }

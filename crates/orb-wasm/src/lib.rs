@@ -19,6 +19,12 @@ fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn create_blank_document(title: Option<String>) -> Result<JsValue, JsValue> {
+    let opened = orb_engine::create_blank_document(title.as_deref());
+    to_js(&opened)
+}
+
+#[wasm_bindgen]
 pub fn open_document(
     bytes: &[u8],
     filename: Option<String>,

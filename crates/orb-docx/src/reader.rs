@@ -93,12 +93,12 @@ pub fn parse_docx(bytes: &[u8], filename: Option<&str>) -> Result<DocumentIr, Do
     }
 
     // Relationships (word/_rels/document.xml.rels)
-    let rels = if let Some(rels_xml) = read_zip_string(&mut archive, "word/_rels/document.xml.rels")?
-    {
-        parse_relationships(&rels_xml)?
-    } else {
-        HashMap::new()
-    };
+    let rels =
+        if let Some(rels_xml) = read_zip_string(&mut archive, "word/_rels/document.xml.rels")? {
+            parse_relationships(&rels_xml)?
+        } else {
+            HashMap::new()
+        };
 
     // Styles (word/styles.xml)
     let styles = if let Some(styles_xml) = read_zip_string(&mut archive, "word/styles.xml")? {
@@ -108,12 +108,11 @@ pub fn parse_docx(bytes: &[u8], filename: Option<&str>) -> Result<DocumentIr, Do
     };
 
     // Numbering (word/numbering.xml)
-    let numbering =
-        if let Some(num_xml) = read_zip_string(&mut archive, "word/numbering.xml")? {
-            parse_numbering(&num_xml)?
-        } else {
-            NumberingMap::default()
-        };
+    let numbering = if let Some(num_xml) = read_zip_string(&mut archive, "word/numbering.xml")? {
+        parse_numbering(&num_xml)?
+    } else {
+        NumberingMap::default()
+    };
 
     // Main document XML
     let document_xml = read_zip_string(&mut archive, "word/document.xml")?
@@ -246,7 +245,9 @@ fn parse_relationships(xml: &str) -> Result<HashMap<String, RelEntry>, DocxError
 
     loop {
         match reader.read_event_into(&mut buf)? {
-            Event::Empty(e) | Event::Start(e) if local_name(e.name().as_ref()) == b"Relationship" => {
+            Event::Empty(e) | Event::Start(e)
+                if local_name(e.name().as_ref()) == b"Relationship" =>
+            {
                 if let (Some(id), Some(target)) = (attr_value(&e, b"Id"), attr_value(&e, b"Target"))
                 {
                     map.insert(id, RelEntry { target });
@@ -471,7 +472,8 @@ impl<'a> ParseCtx<'a> {
             data_base64: BASE64.encode(&bytes),
             filename,
         });
-        self.asset_by_rel.insert(rel_id.to_string(), asset_id.clone());
+        self.asset_by_rel
+            .insert(rel_id.to_string(), asset_id.clone());
         Some(asset_id)
     }
 }
@@ -501,6 +503,7 @@ struct ParagraphBuilder {
     ilvl: u8,
     indent_level: u8,
     page_break_before: bool,
+    has_bottom_border: bool,
     runs: Vec<InlineRun>,
     images: Vec<(String, String, Option<u32>, Option<u32>)>,
     trailing_page_break: bool,
@@ -607,9 +610,12 @@ fn parse_table(
 
     loop {
         match reader.read_event_into(&mut buf)? {
-            Event::Start(e) if local_name(e.name().as_ref()) == b"tr" => {
-                rows.push(parse_table_row(reader, ctx)?);
-            }
+            Event::Start(e) => match local_name(e.name().as_ref()) {
+                b"tr" => {
+                    rows.push(parse_table_row(reader, ctx)?);
+                }
+                _ => {}
+            },
             Event::End(e) if local_name(e.name().as_ref()) == b"tbl" => break,
             Event::Eof => break,
             _ => {}
@@ -719,6 +725,7 @@ fn parse_paragraph(
 
     let mut in_ppr = false;
     let mut in_numpr = false;
+    let mut in_pbdr = false;
     let mut in_r = false;
     let mut in_rpr = false;
     let mut in_t = false;
@@ -748,6 +755,13 @@ fn parse_paragraph(
                     b"ins" => ctx.saw_tracked_changes = true,
                     b"pPr" => in_ppr = true,
                     b"numPr" if in_ppr => in_numpr = true,
+                    b"pBdr" if in_ppr => in_pbdr = true,
+                    b"bottom" if in_pbdr => {
+                        let val = attr_value(&e, b"val").unwrap_or_default();
+                        if !matches!(val.as_str(), "none" | "nil") {
+                            para.has_bottom_border = true;
+                        }
+                    }
                     b"pStyle" if in_ppr => {
                         para.style_id = attr_value(&e, b"val");
                     }
@@ -775,6 +789,10 @@ fn parse_paragraph(
                     b"hyperlink" => {
                         if let Some(rid) = attr_value(&e, b"id") {
                             active_href = ctx.rels.get(&rid).map(|r| r.target.clone());
+                        } else if let Some(anchor) = attr_value(&e, b"anchor") {
+                            if !anchor.is_empty() {
+                                active_href = Some(format!("#{anchor}"));
+                            }
                         }
                     }
                     b"r" => {
@@ -834,6 +852,12 @@ fn parse_paragraph(
                 let qname = e.name();
                 let name = local_name(qname.as_ref());
                 match name {
+                    b"bottom" if in_pbdr => {
+                        let val = attr_value(&e, b"val").unwrap_or_default();
+                        if !matches!(val.as_str(), "none" | "nil") {
+                            para.has_bottom_border = true;
+                        }
+                    }
                     b"pStyle" if in_ppr => para.style_id = attr_value(&e, b"val"),
                     b"jc" if in_ppr => {
                         if let Some(v) = attr_value(&e, b"val") {
@@ -932,7 +956,12 @@ fn parse_paragraph(
                     continue;
                 }
                 match name {
-                    b"pPr" => in_ppr = false,
+                    b"pPr" => {
+                        in_ppr = false;
+                        in_pbdr = false;
+                        in_numpr = false;
+                    }
+                    b"pBdr" => in_pbdr = false,
                     b"numPr" => in_numpr = false,
                     b"rPr" => in_rpr = false,
                     b"t" => in_t = false,
@@ -998,6 +1027,7 @@ fn parse_align(val: &str) -> TextAlign {
 fn materialize_raw_blocks(raw_blocks: Vec<RawBlock>, ctx: &mut ParseCtx<'_>) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut pending_list: Option<(String, bool, Vec<ListItem>)> = None;
+    let mut pending_code: Option<Vec<String>> = None;
 
     let flush_list = |pending: &mut Option<(String, bool, Vec<ListItem>)>,
                       out: &mut Vec<Block>,
@@ -1017,10 +1047,25 @@ fn materialize_raw_blocks(raw_blocks: Vec<RawBlock>, ctx: &mut ParseCtx<'_>) -> 
         }
     };
 
+    let flush_code =
+        |pending: &mut Option<Vec<String>>, out: &mut Vec<Block>, ctx: &mut ParseCtx<'_>| {
+            if let Some(lines) = pending.take() {
+                let id = ctx.alloc_id("code");
+                out.push(Block {
+                    id,
+                    kind: BlockKind::CodeBlock {
+                        language: None,
+                        code: lines.join("\n"),
+                    },
+                });
+            }
+        };
+
     for raw in raw_blocks {
         match raw {
             RawBlock::Table(tbl) => {
                 flush_list(&mut pending_list, &mut blocks, ctx);
+                flush_code(&mut pending_code, &mut blocks, ctx);
                 let id = ctx.alloc_id("tbl");
                 blocks.push(Block {
                     id,
@@ -1030,6 +1075,7 @@ fn materialize_raw_blocks(raw_blocks: Vec<RawBlock>, ctx: &mut ParseCtx<'_>) -> 
             RawBlock::Paragraph(para) => {
                 if para.page_break_before {
                     flush_list(&mut pending_list, &mut blocks, ctx);
+                    flush_code(&mut pending_code, &mut blocks, ctx);
                     let id = ctx.alloc_id("pb");
                     blocks.push(Block {
                         id,
@@ -1042,6 +1088,7 @@ fn materialize_raw_blocks(raw_blocks: Vec<RawBlock>, ctx: &mut ParseCtx<'_>) -> 
                 // Check list membership
                 if let Some(num_id) = &para.num_id {
                     if num_id != "0" && !runs.is_empty() {
+                        flush_code(&mut pending_code, &mut blocks, ctx);
                         let ordered = ctx.numbering.is_ordered(num_id, para.ilvl);
                         let item = ListItem {
                             id: ctx.alloc_id("li"),
@@ -1066,19 +1113,36 @@ fn materialize_raw_blocks(raw_blocks: Vec<RawBlock>, ctx: &mut ParseCtx<'_>) -> 
 
                 flush_list(&mut pending_list, &mut blocks, ctx);
 
-                if !runs.is_empty() {
-                    let style_info = para
+                let style_info = para.style_id.as_deref().and_then(|id| ctx.styles.get(id));
+
+                let is_code_para = style_info.map(|s| s.is_code).unwrap_or(false)
+                    || para
                         .style_id
                         .as_deref()
-                        .and_then(|id| ctx.styles.get(id));
+                        .map(|id| id.eq_ignore_ascii_case("code"))
+                        .unwrap_or(false);
 
-                    let heading_level = style_info
-                        .and_then(|s| s.heading_level)
-                        .or_else(|| {
-                            para.style_id
-                                .as_deref()
-                                .and_then(|id| infer_heading_level(&id.to_ascii_lowercase()))
-                        });
+                // Coalesce consecutive Code-styled paragraphs (including blank lines) into one CodeBlock
+                if is_code_para && para.images.is_empty() && !para.trailing_page_break {
+                    let line = orb_ir::runs_plain_text(&runs);
+                    pending_code.get_or_insert_with(Vec::new).push(line);
+                    continue;
+                }
+
+                flush_code(&mut pending_code, &mut blocks, ctx);
+
+                if runs.is_empty() && para.images.is_empty() && para.has_bottom_border {
+                    let id = ctx.alloc_id("hr");
+                    blocks.push(Block {
+                        id,
+                        kind: BlockKind::HorizontalRule,
+                    });
+                } else if !runs.is_empty() {
+                    let heading_level = style_info.and_then(|s| s.heading_level).or_else(|| {
+                        para.style_id
+                            .as_deref()
+                            .and_then(|id| infer_heading_level(&id.to_ascii_lowercase()))
+                    });
 
                     if let Some(level) = heading_level {
                         let id = ctx.alloc_id("h");
@@ -1088,16 +1152,6 @@ fn materialize_raw_blocks(raw_blocks: Vec<RawBlock>, ctx: &mut ParseCtx<'_>) -> 
                                 level,
                                 runs,
                                 align: para.align,
-                            },
-                        });
-                    } else if style_info.map(|s| s.is_code).unwrap_or(false) {
-                        let code = orb_ir::runs_plain_text(&runs);
-                        let id = ctx.alloc_id("code");
-                        blocks.push(Block {
-                            id,
-                            kind: BlockKind::CodeBlock {
-                                language: None,
-                                code,
                             },
                         });
                     } else if style_info.map(|s| s.is_quote).unwrap_or(false) {
@@ -1155,5 +1209,6 @@ fn materialize_raw_blocks(raw_blocks: Vec<RawBlock>, ctx: &mut ParseCtx<'_>) -> 
     }
 
     flush_list(&mut pending_list, &mut blocks, ctx);
+    flush_code(&mut pending_code, &mut blocks, ctx);
     blocks
 }

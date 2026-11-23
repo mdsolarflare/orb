@@ -1,6 +1,6 @@
 use orb_ir::{
     Block, BlockKind, DocumentFormat, DocumentIr, InlineRun, ListItem, MediaAsset, TableCell,
-    TableRow, TextAlign, TextStyle, merge_adjacent_runs, runs_plain_text,
+    TableRow, TextAlign, TextStyle, merge_adjacent_runs,
 };
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -195,7 +195,8 @@ impl MdBuilder {
                     self.stack.push(Container::Paragraph { runs: Vec::new() });
                 }
                 Tag::BlockQuote(_) => {
-                    self.stack.push(Container::BlockQuote { blocks: Vec::new() });
+                    self.stack
+                        .push(Container::BlockQuote { blocks: Vec::new() });
                 }
                 Tag::CodeBlock(kind) => {
                     let language = match kind {
@@ -539,10 +540,7 @@ impl MdBuilder {
                 });
             }
             Event::TaskListMarker(checked) => {
-                if let Some(Container::ListItem {
-                    checked: slot, ..
-                }) = self.stack.last_mut()
-                {
+                if let Some(Container::ListItem { checked: slot, .. }) = self.stack.last_mut() {
                     *slot = Some(checked);
                 }
             }
@@ -637,11 +635,8 @@ fn write_block(block: &Block, assets: &[MediaAsset], indent: usize, out: &mut St
                         .map(|c| {
                             c.blocks
                                 .iter()
-                                .map(|b| match &b.kind {
-                                    BlockKind::Paragraph { runs, .. }
-                                    | BlockKind::Heading { runs, .. } => format_runs(runs),
-                                    _ => String::new(),
-                                })
+                                .map(format_block_inline)
+                                .filter(|s| !s.is_empty())
                                 .collect::<Vec<_>>()
                                 .join(" ")
                                 .replace('|', "\\|")
@@ -692,7 +687,7 @@ fn write_block(block: &Block, assets: &[MediaAsset], indent: usize, out: &mut St
                 out.push_str(lang);
             }
             out.push('\n');
-            for line in code.lines() {
+            for line in code.split('\n') {
                 out.push_str(&pad);
                 out.push_str(line);
                 out.push('\n');
@@ -721,15 +716,84 @@ fn write_block(block: &Block, assets: &[MediaAsset], indent: usize, out: &mut St
             out.push_str("\n---\n");
         }
         BlockKind::Footnote { label, blocks } => {
-            let mut inner = String::new();
+            let mut parts: Vec<String> = Vec::new();
             for b in blocks {
-                if let BlockKind::Paragraph { runs, .. } = &b.kind {
-                    inner.push_str(&runs_plain_text(runs));
+                let text = format_block_inline(b);
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed.to_string());
                 }
             }
             out.push_str(&pad);
-            out.push_str(&format!("[^{label}]: {}\n", inner.trim()));
+            out.push_str(&format!("[^{label}]: {}\n", parts.join("\n    ")));
         }
+    }
+}
+
+fn format_block_inline(block: &Block) -> String {
+    match &block.kind {
+        BlockKind::Paragraph { runs, .. } | BlockKind::Heading { runs, .. } => format_runs(runs),
+        BlockKind::List { items, .. } => items
+            .iter()
+            .map(|it| {
+                let mut part = format_runs(&it.runs);
+                let children: Vec<String> = it
+                    .children
+                    .iter()
+                    .map(format_block_inline)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !children.is_empty() {
+                    if !part.is_empty() {
+                        part.push(' ');
+                    }
+                    part.push_str(&children.join(" "));
+                }
+                part
+            })
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("; "),
+        BlockKind::CodeBlock { code, .. } => {
+            let trimmed = code.trim();
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                format!("`{}`", trimmed.replace('\n', " "))
+            }
+        }
+        BlockKind::BlockQuote { blocks } | BlockKind::Footnote { blocks, .. } => blocks
+            .iter()
+            .map(format_block_inline)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+        BlockKind::Table { rows } => rows
+            .iter()
+            .map(|r| {
+                r.cells
+                    .iter()
+                    .map(|c| {
+                        c.blocks
+                            .iter()
+                            .map(format_block_inline)
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            })
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("; "),
+        BlockKind::Image { alt, caption, .. } => caption
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(alt.as_str())
+            .to_string(),
+        BlockKind::HorizontalRule | BlockKind::PageBreak => String::new(),
     }
 }
 
@@ -739,20 +803,19 @@ fn format_runs(runs: &[InlineRun]) -> String {
         let mut s = run.text.clone();
         if run.style.code {
             s = format!("`{s}`");
-        } else {
-            if run.style.strikethrough {
-                s = format!("~~{s}~~");
-            }
-            if run.style.bold && run.style.italic {
-                s = format!("***{s}***");
-            } else if run.style.bold {
-                s = format!("**{s}**");
-            } else if run.style.italic {
-                s = format!("*{s}*");
-            }
-            if let Some(href) = &run.style.href {
-                s = format!("[{s}]({href})");
-            }
+        }
+        if run.style.strikethrough {
+            s = format!("~~{s}~~");
+        }
+        if run.style.bold && run.style.italic {
+            s = format!("***{s}***");
+        } else if run.style.bold {
+            s = format!("**{s}**");
+        } else if run.style.italic {
+            s = format!("*{s}*");
+        }
+        if let Some(href) = &run.style.href {
+            s = format!("[{s}]({href})");
         }
         out.push_str(&s);
     }
@@ -768,7 +831,7 @@ mod tests {
         let src = "\
 # Orb Guide
 
-A paragraph with **bold**, *italic*, `code`, and a [link](https://example.com).
+A paragraph with **bold**, *italic*, `code`, **[`linked_code`](https://example.com)**, and a [link](https://example.com).
 
 - [x] Verify PDF signatures
 - [ ] Export `.docx`
@@ -785,14 +848,66 @@ fn main() {}
         let ir = parse_markdown(src, Some("guide.md"));
         assert_eq!(ir.outline.len(), 1);
         assert_eq!(ir.outline[0].title, "Orb Guide");
-        assert!(ir.blocks.iter().any(|b| matches!(b.kind, BlockKind::Table { .. })));
-        assert!(ir.blocks.iter().any(|b| matches!(b.kind, BlockKind::List { .. })));
-        assert!(ir.blocks.iter().any(|b| matches!(b.kind, BlockKind::CodeBlock { .. })));
+        assert!(
+            ir.blocks
+                .iter()
+                .any(|b| matches!(b.kind, BlockKind::Table { .. }))
+        );
+        assert!(
+            ir.blocks
+                .iter()
+                .any(|b| matches!(b.kind, BlockKind::List { .. }))
+        );
+        assert!(
+            ir.blocks
+                .iter()
+                .any(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
+        );
 
         let serialized = serialize_markdown(&ir);
         assert!(serialized.contains("# Orb Guide"));
         assert!(serialized.contains("- [x] Verify PDF signatures"));
         assert!(serialized.contains("| Format | Support |"));
         assert!(serialized.contains("```rust"));
+        assert!(serialized.contains("[**`linked_code`**](https://example.com)"));
+    }
+
+    #[test]
+    fn preserves_inline_styles_in_footnotes() {
+        let mut ir = DocumentIr::new(DocumentFormat::Markdown, Some("Footnotes".to_string()));
+        ir.blocks.push(Block {
+            id: "fn-1".to_string(),
+            kind: BlockKind::Footnote {
+                label: "1".to_string(),
+                blocks: vec![Block {
+                    id: "fn-1-p0".to_string(),
+                    kind: BlockKind::Paragraph {
+                        runs: vec![
+                            InlineRun::plain("See "),
+                            InlineRun {
+                                text: "important".to_string(),
+                                style: TextStyle {
+                                    bold: true,
+                                    ..Default::default()
+                                },
+                            },
+                            InlineRun::plain(" "),
+                            InlineRun {
+                                text: "spec".to_string(),
+                                style: TextStyle {
+                                    italic: true,
+                                    href: Some("https://example.com".to_string()),
+                                    ..Default::default()
+                                },
+                            },
+                        ],
+                        align: TextAlign::Left,
+                        indent_level: 0,
+                    },
+                }],
+            },
+        });
+        let md = serialize_markdown(&ir);
+        assert!(md.contains("[^1]: See **important** [*spec*](https://example.com)"));
     }
 }

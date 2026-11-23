@@ -1,5 +1,6 @@
 import init, {
   apply_ir_edit,
+  create_blank_document,
   export_ir_to_docx,
   export_ir_to_markdown,
   export_pdf_forms,
@@ -21,6 +22,7 @@ import type {
 export type WorkerPayload =
   | { method: 'listSamples' }
   | { method: 'generateSample'; sampleId: string }
+  | { method: 'createBlankDocument'; title?: string }
   | {
       method: 'openDocument';
       bytes: Uint8Array;
@@ -87,6 +89,9 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
         } satisfies GeneratedSamplePayload;
         break;
       }
+      case 'createBlankDocument':
+        result = create_blank_document(req.title ?? undefined) as OpenedDocument;
+        break;
       case 'openDocument':
         result = open_document(
           req.bytes,

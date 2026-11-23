@@ -105,10 +105,20 @@ export interface DocumentIr {
   assets: MediaAsset[];
 }
 
+export type BlockConvertTarget =
+  | { kind: 'paragraph' }
+  | { kind: 'heading'; level: number }
+  | { kind: 'blockQuote' }
+  | { kind: 'codeBlock' }
+  | { kind: 'list'; ordered: boolean; checklist: boolean };
+
 export type EditOperation =
   | { op: 'setTitle'; title: string | null }
   | { op: 'updateBlockRuns'; blockId: string; runs: InlineRun[] }
   | { op: 'updateHeadingLevel'; blockId: string; level: number }
+  | { op: 'setBlockAlign'; blockId: string; align: TextAlign }
+  | { op: 'setBlockIndent'; blockId: string; indentLevel: number }
+  | { op: 'convertBlockKind'; blockId: string; target: BlockConvertTarget }
   | { op: 'updateCodeBlock'; blockId: string; language: string | null; code: string }
   | {
       op: 'updateListItem';
@@ -117,7 +127,15 @@ export type EditOperation =
       runs: InlineRun[];
       checked: boolean | null;
     }
+  | { op: 'addListItem'; blockId: string; afterIndex: number | null; item: ListItem }
+  | { op: 'deleteListItem'; blockId: string; itemIndex: number }
   | { op: 'updateTableCell'; blockId: string; row: number; col: number; text: string }
+  | { op: 'addTableRow'; blockId: string; afterRow: number | null }
+  | { op: 'deleteTableRow'; blockId: string; row: number }
+  | { op: 'addTableColumn'; blockId: string; afterCol: number | null }
+  | { op: 'deleteTableColumn'; blockId: string; col: number }
+  | { op: 'addAsset'; asset: MediaAsset }
+  | { op: 'replaceAllText'; find: string; replace: string; caseSensitive?: boolean }
   | { op: 'insertBlockAfter'; afterBlockId: string | null; block: Block }
   | { op: 'deleteBlock'; blockId: string };
 

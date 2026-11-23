@@ -6,7 +6,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   DownloadIcon,
-  EditIcon,
+  FilePlusIcon,
   MonitorIcon,
   MoonIcon,
   OrbLogoIcon,
@@ -33,12 +33,11 @@ interface ToolbarProps {
   onPageChange: (page: number) => void;
   mdMode: MarkdownViewMode;
   onMdModeChange: (mode: MarkdownViewMode) => void;
-  wordEditMode: boolean;
-  onWordEditModeChange: (editing: boolean) => void;
   showOutline: boolean;
   onToggleOutline: () => void;
   showInspector: boolean;
   onToggleInspector: () => void;
+  onNewDocumentClick?: () => void;
   onOpenFileClick: () => void;
   onGoHome: () => void;
   onExportPdf?: () => void;
@@ -65,12 +64,11 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onPageChange,
   mdMode,
   onMdModeChange,
-  wordEditMode,
-  onWordEditModeChange,
   showOutline,
   onToggleOutline,
   showInspector,
   onToggleInspector,
+  onNewDocumentClick,
   onOpenFileClick,
   onGoHome,
   onExportPdf,
@@ -108,6 +106,19 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           <OrbLogoIcon size={19} />
           <span>orb</span>
         </button>
+
+        {onNewDocumentClick && (
+          <button
+            id="orb-toolbar-new-doc-btn"
+            type="button"
+            className="orb-btn"
+            onClick={onNewDocumentClick}
+            title="New Document"
+          >
+            <FilePlusIcon size={14} />
+            <span>New</span>
+          </button>
+        )}
 
         <button
           id="orb-open-file-btn"
@@ -155,28 +166,6 @@ export const Toolbar: React.FC<ToolbarProps> = ({
                 {m.charAt(0).toUpperCase() + m.slice(1)}
               </button>
             ))}
-          </div>
-        )}
-
-        {doc?.kind === 'word' && (
-          <div className="orb-segmented" role="group" aria-label="Document mode">
-            <button
-              id="orb-word-mode-view"
-              type="button"
-              className={!wordEditMode ? 'is-selected' : ''}
-              onClick={() => onWordEditModeChange(false)}
-            >
-              Read
-            </button>
-            <button
-              id="orb-word-mode-edit"
-              type="button"
-              className={wordEditMode ? 'is-selected' : ''}
-              onClick={() => onWordEditModeChange(true)}
-            >
-              <EditIcon size={12} />
-              Edit
-            </button>
           </div>
         )}
 
@@ -263,7 +252,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           </button>
         )}
 
-        {(doc?.kind === 'markdown' || doc?.kind === 'word') && (
+        {doc?.kind === 'markdown' && (
           <>
             {onExportMarkdown && (
               <button

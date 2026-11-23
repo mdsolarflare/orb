@@ -72,6 +72,29 @@ pub struct GeneratedSample {
     pub hint_pem: Option<String>,
 }
 
+/// Creates a fresh blank canonical IR document (`Untitled.docx`) ready for immediate editing.
+pub fn create_blank_document(title: Option<&str>) -> OpenedDocument {
+    let resolved_title = title
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("Untitled")
+        .to_string();
+    let mut ir = DocumentIr::new(DocumentFormat::Docx, Some(resolved_title));
+    ir.blocks.push(Block {
+        id: "p-initial".into(),
+        kind: BlockKind::Paragraph {
+            runs: Vec::new(),
+            align: TextAlign::Left,
+            indent_level: 0,
+        },
+    });
+    ir.finalize();
+    OpenedDocument::Word {
+        ir,
+        word_format: WordFormat::Docx,
+    }
+}
+
 /// Detects format primarily via file magic bytes, falling back to extension for plain-text Markdown.
 pub fn detect_format(bytes: &[u8], filename: Option<&str>) -> Result<DocumentFormat, EngineError> {
     if bytes.starts_with(b"%PDF-") || find_pdf_header(bytes) {
@@ -110,7 +133,9 @@ pub fn detect_format(bytes: &[u8], filename: Option<&str>) -> Result<DocumentFor
         if matches!(
             lower_ext.as_deref(),
             None | Some("md") | Some("markdown") | Some("mdown") | Some("txt")
-        ) || bytes.iter().all(|&b| b == b'\n' || b == b'\r' || b == b'\t' || b >= 0x20)
+        ) || bytes
+            .iter()
+            .all(|&b| b == b'\n' || b == b'\r' || b == b'\t' || b >= 0x20)
         {
             return Ok(DocumentFormat::Markdown);
         }
@@ -349,7 +374,9 @@ fn build_sample_docx() -> Result<Vec<u8>, DocxError> {
                                     ..Default::default()
                                 },
                             ),
-                            InlineRun::plain("Markdown, .docx, and legacy .doc map into one versioned intermediate representation."),
+                            InlineRun::plain(
+                                "Markdown, .docx, and legacy .doc map into one versioned intermediate representation.",
+                            ),
                         ],
                         children: vec![],
                     },
@@ -364,7 +391,9 @@ fn build_sample_docx() -> Result<Vec<u8>, DocxError> {
                                     ..Default::default()
                                 },
                             ),
-                            InlineRun::plain("Edit blocks directly in Orb and export a clean copy as .docx or .md without mutating original archives."),
+                            InlineRun::plain(
+                                "Edit blocks directly in Orb and export a clean copy as .docx or .md without mutating original archives.",
+                            ),
                         ],
                         children: vec![],
                     },
@@ -379,7 +408,9 @@ fn build_sample_docx() -> Result<Vec<u8>, DocxError> {
                                     ..Default::default()
                                 },
                             ),
-                            InlineRun::plain("The same cargo workspace powers static web WASM today and native Windows/macOS clients tomorrow."),
+                            InlineRun::plain(
+                                "The same cargo workspace powers static web WASM today and native Windows/macOS clients tomorrow.",
+                            ),
                         ],
                         children: vec![],
                     },
@@ -410,7 +441,11 @@ fn build_sample_docx() -> Result<Vec<u8>, DocxError> {
                         header: false,
                         cells: vec![
                             make_cell("c10", "PDF (.pdf)", TextAlign::Left),
-                            make_cell("c11", "Pluggable renderer + RustCrypto CMS", TextAlign::Left),
+                            make_cell(
+                                "c11",
+                                "Pluggable renderer + RustCrypto CMS",
+                                TextAlign::Left,
+                            ),
                             make_cell("c12", "AcroForm incremental update (.pdf)", TextAlign::Left),
                         ],
                     },
@@ -440,7 +475,7 @@ fn build_sample_docx() -> Result<Vec<u8>, DocxError> {
                     id: "bq1-p".into(),
                     kind: BlockKind::Paragraph {
                         runs: vec![InlineRun::styled(
-                            "Switch to Edit Mode in the toolbar above to modify any heading, paragraph, list item, or table cell, then export back to .docx or Markdown.",
+                            "Click anywhere in the document to edit headings, paragraphs, lists, or tables directly using the top menu and formatting bar, then export cleanly to .docx or Markdown.",
                             TextStyle {
                                 italic: true,
                                 ..Default::default()
@@ -511,6 +546,46 @@ let opened = orb_engine::open_document(&file_bytes, Some("contract.pdf"), &trust
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creates_blank_document_and_roundtrips_docx() {
+        let opened = create_blank_document(None);
+        let ir = match opened {
+            OpenedDocument::Word { ir, word_format } => {
+                assert_eq!(word_format, WordFormat::Docx);
+                assert_eq!(ir.title.as_deref(), Some("Untitled"));
+                assert_eq!(ir.blocks.len(), 1);
+                assert_eq!(ir.blocks[0].id, "p-initial");
+                ir
+            }
+            _ => panic!("expected word document"),
+        };
+
+        let edited = apply_ir_edit(
+            ir,
+            EditOperation::UpdateBlockRuns {
+                block_id: "p-initial".into(),
+                runs: vec![InlineRun::styled(
+                    "First draft",
+                    TextStyle {
+                        bold: true,
+                        ..Default::default()
+                    },
+                )],
+            },
+        )
+        .expect("apply edit");
+
+        let docx_bytes = export_ir_to_docx(&edited).expect("export docx");
+        let reopened = open_document(&docx_bytes, Some("Untitled.docx"), &[]).expect("reopen");
+        match reopened {
+            OpenedDocument::Word { ir, word_format } => {
+                assert_eq!(word_format, WordFormat::Docx);
+                assert!(ir.plain_text().contains("First draft"));
+            }
+            _ => panic!("expected word document"),
+        }
+    }
 
     #[test]
     fn opens_all_bundled_samples_via_magic_bytes() {

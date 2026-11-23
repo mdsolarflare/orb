@@ -12,23 +12,56 @@ See [SPEC.md](./SPEC.md) for the full technical specification.
 
 ## Prerequisites
 
-- Rust toolchain (`cargo`, `rustup target add wasm32-unknown-unknown`, `wasm-bindgen-cli` matching `Cargo.toml`)
+- Rust toolchain (`cargo`, `rustup`)
 - Node.js 22+ and `pnpm`
+
+Install the WASM target, matching `wasm-bindgen-cli` (version must match `wasm-bindgen` in `Cargo.toml`), and web dependencies:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+pnpm --dir web install
+```
 
 ## Build & Test
 
-```bash
+### Build WASM Bindings
+
+```sh
+cargo build -p orb-wasm --target wasm32-unknown-unknown --release
+wasm-bindgen --target web --out-dir web/src/wasm target/wasm32-unknown-unknown/release/orb_wasm.wasm
+```
+
+(Also available as `pnpm build:wasm`.)
+
+### Build Static Web App
+
+```sh
+# Build the frontend into web/dist/ (requires WASM bindings built above)
+pnpm --dir web build
+
+# Or run both WASM and frontend builds together
+pnpm build
+```
+
+### Run Tests
+
+```sh
 # Run Rust workspace tests
 cargo test --workspace
 
-# Build WASM bindings + static web app into web/dist/
-pnpm build
-
 # Run frontend tests (including 6-color theme invariant check)
 pnpm test
+```
 
-# Start local dev server (after pnpm build:wasm)
+### Run Locally
+
+```sh
+# Start Vite dev server (after building WASM bindings)
 pnpm dev
+
+# Or preview the static production build in web/dist/
+pnpm --dir web preview
 ```
 
 The production output in `web/dist/` is 100% static (relative paths, zero backend server, zero outbound network requests).
