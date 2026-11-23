@@ -1,0 +1,27 @@
+# Dependabot version updates configuration:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+
+updates:
+  # Frontend npm dependencies. This is a pnpm workspace: the single
+  # pnpm-lock.yaml lives at the repo root, so Dependabot must run from the
+  # workspace root — a subdirectory entry bumps only web/package.json
+  # and the PR then fails CI's `pnpm install --frozen-lockfile`
+  # (dependabot-core#11135).
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Rust/Cargo workspace dependencies
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # GitHub Actions (keeps SHA-pinned action versions up to date)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
