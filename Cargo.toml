@@ -31,7 +31,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 quick-xml = "0.37"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 cfb = "0.11"
-lopdf = { version = "0.36", default-features = false }
+lopdf = { version = "0.47", default-features = false }
 
 # Pure-Rust RustCrypto stack for PDF CMS/PKCS#7 & X.509 signature verification
 cms = { version = "0.2.3", default-features = false, features = ["alloc", "std"] }
