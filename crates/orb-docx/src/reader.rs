@@ -7,8 +7,8 @@ use orb_ir::{
     Block, BlockKind, DiagnosticSeverity, DocumentFormat, DocumentIr, InlineRun, ListItem,
     MediaAsset, TableCell, TableRow, TextAlign, TextStyle, merge_adjacent_runs,
 };
-use quick_xml::Reader;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::{Reader, XmlVersion};
+use quick_xml::events::{BytesRef, BytesStart, Event};
 use zip::ZipArchive;
 
 use crate::DocxError;
@@ -64,11 +64,12 @@ pub fn parse_docx(bytes: &[u8], filename: Option<&str>) -> Result<DocumentIr, Do
     let mut has_smartart = false;
     for i in 0..archive.len() {
         if let Ok(entry) = archive.by_index(i) {
-            let name = entry.name();
-            if name.ends_with("vbaProject.bin") {
-                has_vba = true;
-            } else if name.starts_with("word/diagrams/") {
-                has_smartart = true;
+            if let Ok(name) = entry.name() {
+                if name.ends_with("vbaProject.bin") {
+                    has_vba = true;
+                } else if name.starts_with("word/diagrams/") {
+                    has_smartart = true;
+                }
             }
         }
     }
@@ -184,19 +185,32 @@ fn read_zip_bytes(
     }
 }
 
-fn local_name(raw: &[u8]) -> &[u8] {
-    match raw.iter().rposition(|&b| b == b':') {
-        Some(idx) => &raw[idx + 1..],
-        None => raw,
+fn local_name(raw: &str) -> &str {
+    raw.rsplit_once(':').map_or(raw, |(_, local)| local)
+}
+
+fn resolve_general_ref(r: &BytesRef<'_>) -> String {
+    if let Ok(Some(ch)) = r.resolve_char_ref() {
+        return ch.to_string();
+    }
+    match r.as_ref() {
+        "lt" => "<".to_string(),
+        "gt" => ">".to_string(),
+        "amp" => "&".to_string(),
+        "apos" => "'".to_string(),
+        "quot" => "\"".to_string(),
+        other => format!("&{other};"),
     }
 }
 
-fn attr_value(e: &BytesStart<'_>, target_local: &[u8]) -> Option<String> {
+fn attr_value(e: &BytesStart<'_>, target_local: &str) -> Option<String> {
     for attr in e.attributes().flatten() {
         if local_name(attr.key.as_ref()) == target_local {
-            if let Ok(val) = attr.unescape_value() {
-                return Some(val.into_owned());
-            }
+            return Some(
+                attr.normalized_value(XmlVersion::Implicit1_0)
+                    .unwrap_or(attr.value)
+                    .into_owned(),
+            );
         }
     }
     None
@@ -205,30 +219,58 @@ fn attr_value(e: &BytesStart<'_>, target_local: &[u8]) -> Option<String> {
 fn parse_core_properties(xml: &str, doc: &mut DocumentIr) {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
-    let mut active_tag: Option<Vec<u8>> = None;
+    let mut depth: usize = 0;
+    let mut active_tag: Option<String> = None;
+    let mut cur_text = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                active_tag = Some(local_name(e.name().as_ref()).to_vec());
+                depth += 1;
+                if depth == 2 {
+                    let qname = e.name();
+                    let name = local_name(qname.as_ref());
+                    if matches!(
+                        name,
+                        "title" | "creator" | "subject" | "created" | "modified"
+                    ) {
+                        active_tag = Some(name.to_string());
+                        cur_text.clear();
+                    }
+                }
             }
             Ok(Event::End(_)) => {
-                active_tag = None;
+                if depth == 2 {
+                    if let Some(tag) = active_tag.take() {
+                        let val = cur_text.trim();
+                        if !val.is_empty() {
+                            match tag.as_str() {
+                                "title" => doc.title = Some(val.to_string()),
+                                "creator" => doc.metadata.author = Some(val.to_string()),
+                                "subject" => doc.metadata.subject = Some(val.to_string()),
+                                "created" => doc.metadata.created = Some(val.to_string()),
+                                "modified" => doc.metadata.modified = Some(val.to_string()),
+                                _ => {}
+                            }
+                        }
+                    }
+                    cur_text.clear();
+                }
+                depth = depth.saturating_sub(1);
             }
             Ok(Event::Text(t)) => {
-                if let (Some(tag), Ok(text)) = (&active_tag, t.unescape()) {
-                    let val = text.trim();
-                    if val.is_empty() {
-                        continue;
-                    }
-                    match tag.as_slice() {
-                        b"title" => doc.title = Some(val.to_string()),
-                        b"creator" => doc.metadata.author = Some(val.to_string()),
-                        b"subject" => doc.metadata.subject = Some(val.to_string()),
-                        b"created" => doc.metadata.created = Some(val.to_string()),
-                        b"modified" => doc.metadata.modified = Some(val.to_string()),
-                        _ => {}
-                    }
+                if active_tag.is_some() {
+                    cur_text.push_str(&t.xml10_content());
+                }
+            }
+            Ok(Event::CData(c)) => {
+                if active_tag.is_some() {
+                    cur_text.push_str(&c.xml10_content());
+                }
+            }
+            Ok(Event::GeneralRef(r)) => {
+                if active_tag.is_some() {
+                    cur_text.push_str(&resolve_general_ref(&r));
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -246,10 +288,9 @@ fn parse_relationships(xml: &str) -> Result<HashMap<String, RelEntry>, DocxError
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Empty(e) | Event::Start(e)
-                if local_name(e.name().as_ref()) == b"Relationship" =>
+                if local_name(e.name().as_ref()) == "Relationship" =>
             {
-                if let (Some(id), Some(target)) = (attr_value(&e, b"Id"), attr_value(&e, b"Target"))
-                {
+                if let (Some(id), Some(target)) = (attr_value(&e, "Id"), attr_value(&e, "Target")) {
                     map.insert(id, RelEntry { target });
                 }
             }
@@ -271,20 +312,20 @@ fn parse_styles(xml: &str) -> Result<HashMap<String, StyleInfo>, DocxError> {
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Start(e) => match local_name(e.name().as_ref()) {
-                b"style" => {
-                    cur_id = attr_value(&e, b"styleId");
+                "style" => {
+                    cur_id = attr_value(&e, "styleId");
                     cur = StyleInfo::default();
                 }
-                b"name" if cur_id.is_some() => {
-                    if let Some(val) = attr_value(&e, b"val") {
+                "name" if cur_id.is_some() => {
+                    if let Some(val) = attr_value(&e, "val") {
                         cur.name = val;
                     }
                 }
-                b"basedOn" if cur_id.is_some() => {
-                    cur.based_on = attr_value(&e, b"val");
+                "basedOn" if cur_id.is_some() => {
+                    cur.based_on = attr_value(&e, "val");
                 }
-                b"outlineLvl" if cur_id.is_some() => {
-                    if let Some(val) = attr_value(&e, b"val").and_then(|v| v.parse::<u8>().ok()) {
+                "outlineLvl" if cur_id.is_some() => {
+                    if let Some(val) = attr_value(&e, "val").and_then(|v| v.parse::<u8>().ok()) {
                         if val < 6 {
                             cur.heading_level = Some(val + 1);
                         }
@@ -293,16 +334,16 @@ fn parse_styles(xml: &str) -> Result<HashMap<String, StyleInfo>, DocxError> {
                 _ => {}
             },
             Event::Empty(e) if cur_id.is_some() => match local_name(e.name().as_ref()) {
-                b"name" => {
-                    if let Some(val) = attr_value(&e, b"val") {
+                "name" => {
+                    if let Some(val) = attr_value(&e, "val") {
                         cur.name = val;
                     }
                 }
-                b"basedOn" => {
-                    cur.based_on = attr_value(&e, b"val");
+                "basedOn" => {
+                    cur.based_on = attr_value(&e, "val");
                 }
-                b"outlineLvl" => {
-                    if let Some(val) = attr_value(&e, b"val").and_then(|v| v.parse::<u8>().ok()) {
+                "outlineLvl" => {
+                    if let Some(val) = attr_value(&e, "val").and_then(|v| v.parse::<u8>().ok()) {
                         if val < 6 {
                             cur.heading_level = Some(val + 1);
                         }
@@ -310,7 +351,7 @@ fn parse_styles(xml: &str) -> Result<HashMap<String, StyleInfo>, DocxError> {
                 }
                 _ => {}
             },
-            Event::End(e) if local_name(e.name().as_ref()) == b"style" => {
+            Event::End(e) if local_name(e.name().as_ref()) == "style" => {
                 if let Some(id) = cur_id.take() {
                     let lower_name = cur.name.to_ascii_lowercase();
                     let lower_id = id.to_ascii_lowercase();
@@ -378,49 +419,49 @@ fn parse_numbering(xml: &str) -> Result<NumberingMap, DocxError> {
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Start(e) => match local_name(e.name().as_ref()) {
-                b"abstractNum" => cur_abstract = attr_value(&e, b"abstractNumId"),
-                b"lvl" if cur_abstract.is_some() => {
-                    cur_ilvl = attr_value(&e, b"ilvl").and_then(|v| v.parse::<u8>().ok());
+                "abstractNum" => cur_abstract = attr_value(&e, "abstractNumId"),
+                "lvl" if cur_abstract.is_some() => {
+                    cur_ilvl = attr_value(&e, "ilvl").and_then(|v| v.parse::<u8>().ok());
                 }
-                b"num" => cur_num = attr_value(&e, b"numId"),
-                b"numFmt" => {
+                "num" => cur_num = attr_value(&e, "numId"),
+                "numFmt" => {
                     if let (Some(abs), Some(ilvl), Some(fmt)) =
-                        (&cur_abstract, cur_ilvl, attr_value(&e, b"val"))
+                        (&cur_abstract, cur_ilvl, attr_value(&e, "val"))
                     {
                         let ordered = !matches!(fmt.as_str(), "bullet" | "none");
                         map.level_ordered.insert((abs.clone(), ilvl), ordered);
                     }
                 }
-                b"abstractNumId" => {
-                    if let (Some(num_id), Some(abs_id)) = (&cur_num, attr_value(&e, b"val")) {
+                "abstractNumId" => {
+                    if let (Some(num_id), Some(abs_id)) = (&cur_num, attr_value(&e, "val")) {
                         map.num_to_abstract.insert(num_id.clone(), abs_id);
                     }
                 }
                 _ => {}
             },
             Event::Empty(e) => match local_name(e.name().as_ref()) {
-                b"numFmt" => {
+                "numFmt" => {
                     if let (Some(abs), Some(ilvl), Some(fmt)) =
-                        (&cur_abstract, cur_ilvl, attr_value(&e, b"val"))
+                        (&cur_abstract, cur_ilvl, attr_value(&e, "val"))
                     {
                         let ordered = !matches!(fmt.as_str(), "bullet" | "none");
                         map.level_ordered.insert((abs.clone(), ilvl), ordered);
                     }
                 }
-                b"abstractNumId" => {
-                    if let (Some(num_id), Some(abs_id)) = (&cur_num, attr_value(&e, b"val")) {
+                "abstractNumId" => {
+                    if let (Some(num_id), Some(abs_id)) = (&cur_num, attr_value(&e, "val")) {
                         map.num_to_abstract.insert(num_id.clone(), abs_id);
                     }
                 }
                 _ => {}
             },
             Event::End(e) => match local_name(e.name().as_ref()) {
-                b"abstractNum" => {
+                "abstractNum" => {
                     cur_abstract = None;
                     cur_ilvl = None;
                 }
-                b"lvl" => cur_ilvl = None,
-                b"num" => cur_num = None,
+                "lvl" => cur_ilvl = None,
+                "num" => cur_num = None,
                 _ => {}
             },
             Event::Eof => break,
@@ -527,18 +568,18 @@ fn parse_body_xml(xml: &str, ctx: &mut ParseCtx<'_>) -> Result<Vec<Block>, DocxE
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Start(e) => match local_name(e.name().as_ref()) {
-                b"body" => in_body = true,
-                b"p" if in_body => {
+                "body" => in_body = true,
+                "p" if in_body => {
                     let para = parse_paragraph(&mut reader, ctx)?;
                     raw_blocks.push(RawBlock::Paragraph(para));
                 }
-                b"tbl" if in_body => {
+                "tbl" if in_body => {
                     let rows = parse_table(&mut reader, ctx)?;
                     raw_blocks.push(RawBlock::Table(TableRowList { rows }));
                 }
                 _ => {}
             },
-            Event::End(e) if local_name(e.name().as_ref()) == b"body" => break,
+            Event::End(e) if local_name(e.name().as_ref()) == "body" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -555,9 +596,9 @@ fn parse_footnotes(xml: &str, ctx: &mut ParseCtx<'_>) -> Result<Vec<Block>, Docx
 
     loop {
         match reader.read_event_into(&mut buf)? {
-            Event::Start(e) if local_name(e.name().as_ref()) == b"footnote" => {
-                let id_attr = attr_value(&e, b"id").unwrap_or_default();
-                let fn_type = attr_value(&e, b"type");
+            Event::Start(e) if local_name(e.name().as_ref()) == "footnote" => {
+                let id_attr = attr_value(&e, "id").unwrap_or_default();
+                let fn_type = attr_value(&e, "type");
                 let skip = matches!(
                     fn_type.as_deref(),
                     Some("separator") | Some("continuationSeparator")
@@ -568,11 +609,11 @@ fn parse_footnotes(xml: &str, ctx: &mut ParseCtx<'_>) -> Result<Vec<Block>, Docx
                 let mut inner_buf = Vec::new();
                 loop {
                     match reader.read_event_into(&mut inner_buf)? {
-                        Event::Start(se) if local_name(se.name().as_ref()) == b"p" => {
+                        Event::Start(se) if local_name(se.name().as_ref()) == "p" => {
                             let para = parse_paragraph(&mut reader, ctx)?;
                             inner_raw.push(RawBlock::Paragraph(para));
                         }
-                        Event::End(ee) if local_name(ee.name().as_ref()) == b"footnote" => break,
+                        Event::End(ee) if local_name(ee.name().as_ref()) == "footnote" => break,
                         Event::Eof => break,
                         _ => {}
                     }
@@ -611,12 +652,12 @@ fn parse_table(
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Start(e) => match local_name(e.name().as_ref()) {
-                b"tr" => {
+                "tr" => {
                     rows.push(parse_table_row(reader, ctx)?);
                 }
                 _ => {}
             },
-            Event::End(e) if local_name(e.name().as_ref()) == b"tbl" => break,
+            Event::End(e) if local_name(e.name().as_ref()) == "tbl" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -642,14 +683,14 @@ fn parse_table_row(
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Start(e) => match local_name(e.name().as_ref()) {
-                b"tblHeader" => header = true,
-                b"tc" => cells.push(parse_table_cell(reader, ctx)?),
+                "tblHeader" => header = true,
+                "tc" => cells.push(parse_table_cell(reader, ctx)?),
                 _ => {}
             },
-            Event::Empty(e) if local_name(e.name().as_ref()) == b"tblHeader" => {
+            Event::Empty(e) if local_name(e.name().as_ref()) == "tblHeader" => {
                 header = true;
             }
-            Event::End(e) if local_name(e.name().as_ref()) == b"tr" => break,
+            Event::End(e) if local_name(e.name().as_ref()) == "tr" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -670,27 +711,27 @@ fn parse_table_cell(
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Start(e) => match local_name(e.name().as_ref()) {
-                b"gridSpan" => {
-                    if let Some(v) = attr_value(&e, b"val").and_then(|s| s.parse::<u16>().ok()) {
+                "gridSpan" => {
+                    if let Some(v) = attr_value(&e, "val").and_then(|s| s.parse::<u16>().ok()) {
                         col_span = v.max(1);
                     }
                 }
-                b"p" => {
+                "p" => {
                     let para = parse_paragraph(reader, ctx)?;
                     raw_blocks.push(RawBlock::Paragraph(para));
                 }
-                b"tbl" => {
+                "tbl" => {
                     let nested = parse_table(reader, ctx)?;
                     raw_blocks.push(RawBlock::Table(TableRowList { rows: nested }));
                 }
                 _ => {}
             },
-            Event::Empty(e) if local_name(e.name().as_ref()) == b"gridSpan" => {
-                if let Some(v) = attr_value(&e, b"val").and_then(|s| s.parse::<u16>().ok()) {
+            Event::Empty(e) if local_name(e.name().as_ref()) == "gridSpan" => {
+                if let Some(v) = attr_value(&e, "val").and_then(|s| s.parse::<u16>().ok()) {
                     col_span = v.max(1);
                 }
             }
-            Event::End(e) if local_name(e.name().as_ref()) == b"tc" => break,
+            Event::End(e) if local_name(e.name().as_ref()) == "tc" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -741,7 +782,7 @@ fn parse_paragraph(
             Event::Start(e) => {
                 let qname = e.name();
                 let name = local_name(qname.as_ref());
-                if name == b"del" {
+                if name == "del" {
                     ctx.saw_tracked_changes = true;
                     skip_del_depth += 1;
                     buf.clear();
@@ -752,84 +793,84 @@ fn parse_paragraph(
                     continue;
                 }
                 match name {
-                    b"ins" => ctx.saw_tracked_changes = true,
-                    b"pPr" => in_ppr = true,
-                    b"numPr" if in_ppr => in_numpr = true,
-                    b"pBdr" if in_ppr => in_pbdr = true,
-                    b"bottom" if in_pbdr => {
-                        let val = attr_value(&e, b"val").unwrap_or_default();
+                    "ins" => ctx.saw_tracked_changes = true,
+                    "pPr" => in_ppr = true,
+                    "numPr" if in_ppr => in_numpr = true,
+                    "pBdr" if in_ppr => in_pbdr = true,
+                    "bottom" if in_pbdr => {
+                        let val = attr_value(&e, "val").unwrap_or_default();
                         if !matches!(val.as_str(), "none" | "nil") {
                             para.has_bottom_border = true;
                         }
                     }
-                    b"pStyle" if in_ppr => {
-                        para.style_id = attr_value(&e, b"val");
+                    "pStyle" if in_ppr => {
+                        para.style_id = attr_value(&e, "val");
                     }
-                    b"jc" if in_ppr => {
-                        if let Some(v) = attr_value(&e, b"val") {
+                    "jc" if in_ppr => {
+                        if let Some(v) = attr_value(&e, "val") {
                             para.align = parse_align(&v);
                         }
                     }
-                    b"numId" if in_numpr => {
-                        para.num_id = attr_value(&e, b"val");
+                    "numId" if in_numpr => {
+                        para.num_id = attr_value(&e, "val");
                     }
-                    b"ilvl" if in_numpr => {
-                        if let Some(v) = attr_value(&e, b"val").and_then(|s| s.parse::<u8>().ok()) {
+                    "ilvl" if in_numpr => {
+                        if let Some(v) = attr_value(&e, "val").and_then(|s| s.parse::<u8>().ok()) {
                             para.ilvl = v;
                         }
                     }
-                    b"ind" if in_ppr => {
+                    "ind" if in_ppr => {
                         if let Some(left) =
-                            attr_value(&e, b"left").and_then(|s| s.parse::<u32>().ok())
+                            attr_value(&e, "left").and_then(|s| s.parse::<u32>().ok())
                         {
                             para.indent_level = ((left / 720).min(6)) as u8;
                         }
                     }
-                    b"pageBreakBefore" if in_ppr => para.page_break_before = true,
-                    b"hyperlink" => {
-                        if let Some(rid) = attr_value(&e, b"id") {
+                    "pageBreakBefore" if in_ppr => para.page_break_before = true,
+                    "hyperlink" => {
+                        if let Some(rid) = attr_value(&e, "id") {
                             active_href = ctx.rels.get(&rid).map(|r| r.target.clone());
-                        } else if let Some(anchor) = attr_value(&e, b"anchor") {
+                        } else if let Some(anchor) = attr_value(&e, "anchor") {
                             if !anchor.is_empty() {
                                 active_href = Some(format!("#{anchor}"));
                             }
                         }
                     }
-                    b"r" => {
+                    "r" => {
                         in_r = true;
                         cur_run_style = TextStyle {
                             href: active_href.clone(),
                             ..Default::default()
                         };
                     }
-                    b"rPr" if in_r => in_rpr = true,
-                    b"t" | b"instrText" if in_r => in_t = name == b"t",
-                    b"drawing" => {
+                    "rPr" if in_r => in_rpr = true,
+                    "t" | "instrText" if in_r => in_t = name == "t",
+                    "drawing" => {
                         cur_drawing_dims = (None, None);
                         cur_drawing_alt.clear();
                     }
-                    b"extent" => {
-                        let w = attr_value(&e, b"cx")
+                    "extent" => {
+                        let w = attr_value(&e, "cx")
                             .and_then(|v| v.parse::<u64>().ok())
                             .map(|emu| (emu / 9525) as u32);
-                        let h = attr_value(&e, b"cy")
+                        let h = attr_value(&e, "cy")
                             .and_then(|v| v.parse::<u64>().ok())
                             .map(|emu| (emu / 9525) as u32);
                         if w.is_some() {
                             cur_drawing_dims = (w, h);
                         }
                     }
-                    b"docPr" => {
+                    "docPr" => {
                         if let Some(descr) =
-                            attr_value(&e, b"descr").or_else(|| attr_value(&e, b"name"))
+                            attr_value(&e, "descr").or_else(|| attr_value(&e, "name"))
                         {
                             if !descr.is_empty() {
                                 cur_drawing_alt = descr;
                             }
                         }
                     }
-                    b"blip" => {
-                        if let Some(rel_id) = attr_value(&e, b"embed") {
+                    "blip" => {
+                        if let Some(rel_id) = attr_value(&e, "embed") {
                             if let Some(asset_id) = ctx.resolve_image_asset(&rel_id) {
                                 para.images.push((
                                     asset_id,
@@ -852,73 +893,73 @@ fn parse_paragraph(
                 let qname = e.name();
                 let name = local_name(qname.as_ref());
                 match name {
-                    b"bottom" if in_pbdr => {
-                        let val = attr_value(&e, b"val").unwrap_or_default();
+                    "bottom" if in_pbdr => {
+                        let val = attr_value(&e, "val").unwrap_or_default();
                         if !matches!(val.as_str(), "none" | "nil") {
                             para.has_bottom_border = true;
                         }
                     }
-                    b"pStyle" if in_ppr => para.style_id = attr_value(&e, b"val"),
-                    b"jc" if in_ppr => {
-                        if let Some(v) = attr_value(&e, b"val") {
+                    "pStyle" if in_ppr => para.style_id = attr_value(&e, "val"),
+                    "jc" if in_ppr => {
+                        if let Some(v) = attr_value(&e, "val") {
                             para.align = parse_align(&v);
                         }
                     }
-                    b"numId" if in_numpr => para.num_id = attr_value(&e, b"val"),
-                    b"ilvl" if in_numpr => {
-                        if let Some(v) = attr_value(&e, b"val").and_then(|s| s.parse::<u8>().ok()) {
+                    "numId" if in_numpr => para.num_id = attr_value(&e, "val"),
+                    "ilvl" if in_numpr => {
+                        if let Some(v) = attr_value(&e, "val").and_then(|s| s.parse::<u8>().ok()) {
                             para.ilvl = v;
                         }
                     }
-                    b"ind" if in_ppr => {
+                    "ind" if in_ppr => {
                         if let Some(left) =
-                            attr_value(&e, b"left").and_then(|s| s.parse::<u32>().ok())
+                            attr_value(&e, "left").and_then(|s| s.parse::<u32>().ok())
                         {
                             para.indent_level = ((left / 720).min(6)) as u8;
                         }
                     }
-                    b"pageBreakBefore" if in_ppr => para.page_break_before = true,
-                    b"br" if in_r => {
-                        if attr_value(&e, b"type").as_deref() == Some("page") {
+                    "pageBreakBefore" if in_ppr => para.page_break_before = true,
+                    "br" if in_r => {
+                        if attr_value(&e, "type").as_deref() == Some("page") {
                             para.trailing_page_break = true;
                         } else {
                             para.runs
                                 .push(InlineRun::styled("\n", cur_run_style.clone()));
                         }
                     }
-                    b"tab" if in_r => {
+                    "tab" if in_r => {
                         para.runs
                             .push(InlineRun::styled("\t", cur_run_style.clone()));
                     }
-                    b"footnoteReference" if in_r => {
-                        if let Some(id) = attr_value(&e, b"id") {
+                    "footnoteReference" if in_r => {
+                        if let Some(id) = attr_value(&e, "id") {
                             let mut style = cur_run_style.clone();
                             style.superscript = true;
                             para.runs.push(InlineRun::styled(format!("[{id}]"), style));
                         }
                     }
-                    b"extent" => {
-                        let w = attr_value(&e, b"cx")
+                    "extent" => {
+                        let w = attr_value(&e, "cx")
                             .and_then(|v| v.parse::<u64>().ok())
                             .map(|emu| (emu / 9525) as u32);
-                        let h = attr_value(&e, b"cy")
+                        let h = attr_value(&e, "cy")
                             .and_then(|v| v.parse::<u64>().ok())
                             .map(|emu| (emu / 9525) as u32);
                         if w.is_some() {
                             cur_drawing_dims = (w, h);
                         }
                     }
-                    b"docPr" => {
+                    "docPr" => {
                         if let Some(descr) =
-                            attr_value(&e, b"descr").or_else(|| attr_value(&e, b"name"))
+                            attr_value(&e, "descr").or_else(|| attr_value(&e, "name"))
                         {
                             if !descr.is_empty() {
                                 cur_drawing_alt = descr;
                             }
                         }
                     }
-                    b"blip" => {
-                        if let Some(rel_id) = attr_value(&e, b"embed") {
+                    "blip" => {
+                        if let Some(rel_id) = attr_value(&e, "embed") {
                             if let Some(asset_id) = ctx.resolve_image_asset(&rel_id) {
                                 para.images.push((
                                     asset_id,
@@ -935,18 +976,34 @@ fn parse_paragraph(
             }
             Event::Text(t) => {
                 if skip_del_depth == 0 && in_t {
-                    if let Ok(text) = t.unescape() {
-                        if !text.is_empty() {
-                            para.runs
-                                .push(InlineRun::styled(text.into_owned(), cur_run_style.clone()));
-                        }
+                    let text = t.xml10_content();
+                    if !text.is_empty() {
+                        para.runs
+                            .push(InlineRun::styled(text.into_owned(), cur_run_style.clone()));
                     }
+                }
+            }
+            Event::CData(c) => {
+                if skip_del_depth == 0 && in_t {
+                    let text = c.xml10_content();
+                    if !text.is_empty() {
+                        para.runs
+                            .push(InlineRun::styled(text.into_owned(), cur_run_style.clone()));
+                    }
+                }
+            }
+            Event::GeneralRef(r) => {
+                if skip_del_depth == 0 && in_t {
+                    para.runs.push(InlineRun::styled(
+                        resolve_general_ref(&r),
+                        cur_run_style.clone(),
+                    ));
                 }
             }
             Event::End(e) => {
                 let qname = e.name();
                 let name = local_name(qname.as_ref());
-                if name == b"del" {
+                if name == "del" {
                     skip_del_depth = skip_del_depth.saturating_sub(1);
                     buf.clear();
                     continue;
@@ -956,18 +1013,18 @@ fn parse_paragraph(
                     continue;
                 }
                 match name {
-                    b"pPr" => {
+                    "pPr" => {
                         in_ppr = false;
                         in_pbdr = false;
                         in_numpr = false;
                     }
-                    b"pBdr" => in_pbdr = false,
-                    b"numPr" => in_numpr = false,
-                    b"rPr" => in_rpr = false,
-                    b"t" => in_t = false,
-                    b"r" => in_r = false,
-                    b"hyperlink" => active_href = None,
-                    b"p" => break,
+                    "pBdr" => in_pbdr = false,
+                    "numPr" => in_numpr = false,
+                    "rPr" => in_rpr = false,
+                    "t" => in_t = false,
+                    "r" => in_r = false,
+                    "hyperlink" => active_href = None,
+                    "p" => break,
                     _ => {}
                 }
             }
@@ -980,30 +1037,30 @@ fn parse_paragraph(
     Ok(para)
 }
 
-fn apply_rpr_tag(name: &[u8], e: &BytesStart<'_>, style: &mut TextStyle) {
+fn apply_rpr_tag(name: &str, e: &BytesStart<'_>, style: &mut TextStyle) {
     let val_is_off = || {
         matches!(
-            attr_value(e, b"val").as_deref(),
+            attr_value(e, "val").as_deref(),
             Some("0") | Some("false") | Some("none")
         )
     };
     match name {
-        b"b" => style.bold = !val_is_off(),
-        b"i" => style.italic = !val_is_off(),
-        b"u" => style.underline = !val_is_off(),
-        b"strike" | b"dstrike" => style.strikethrough = !val_is_off(),
-        b"vertAlign" => match attr_value(e, b"val").as_deref() {
+        "b" => style.bold = !val_is_off(),
+        "i" => style.italic = !val_is_off(),
+        "u" => style.underline = !val_is_off(),
+        "strike" | "dstrike" => style.strikethrough = !val_is_off(),
+        "vertAlign" => match attr_value(e, "val").as_deref() {
             Some("superscript") => style.superscript = true,
             Some("subscript") => style.subscript = true,
             _ => {}
         },
-        b"sz" => {
-            if let Some(half_pts) = attr_value(e, b"val").and_then(|v| v.parse::<f32>().ok()) {
+        "sz" => {
+            if let Some(half_pts) = attr_value(e, "val").and_then(|v| v.parse::<f32>().ok()) {
                 style.font_size_pt = Some(half_pts / 2.0);
             }
         }
-        b"rFonts" => {
-            if let Some(ascii) = attr_value(e, b"ascii") {
+        "rFonts" => {
+            if let Some(ascii) = attr_value(e, "ascii") {
                 let lower = ascii.to_ascii_lowercase();
                 if lower.contains("mono") || lower.contains("courier") || lower.contains("consolas")
                 {

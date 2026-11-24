@@ -1,13 +1,13 @@
 use der::{Decode, DecodePem, Encode};
 use p256::ecdsa::{Signature as P256Sig, VerifyingKey as P256Key};
 use p384::ecdsa::{Signature as P384Sig, VerifyingKey as P384Key};
+use rsa::PublicKey as RsaPublicKey;
 use rsa::pkcs1v15::{Signature as RsaSig, VerifyingKey as RsaVerifyingKey};
-use rsa::RsaPublicKey;
+use rsa::pkcs8::DecodePublicKey;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
 use signature::Verifier;
-use spki::DecodePublicKey;
 use x509_cert::Certificate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ impl CertificateTrustProvider for WebTrustProvider {
             return TrustEvaluation {
                 status: TrustStatus::InvalidCertificate,
                 detail: "Embedded signer certificate could not be parsed as X.509 DER.".into(),
-            matched_root_subject: None,
+                matched_root_subject: None,
             };
         };
 
@@ -96,7 +96,8 @@ impl CertificateTrustProvider for WebTrustProvider {
             {
                 return TrustEvaluation {
                     status: TrustStatus::TrustedByUserRoot,
-                    detail: "Certificate chain verified against a user-imported trusted root CA.".into(),
+                    detail: "Certificate chain verified against a user-imported trusted root CA."
+                        .into(),
                     matched_root_subject: Some(root.tbs_certificate.subject.to_string()),
                 };
             }

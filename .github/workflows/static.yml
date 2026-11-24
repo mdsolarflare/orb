@@ -1,4 +1,4 @@
-# Simple workflow for deploying static content to GitHub Pages
+# Workflow for building and deploying static content to GitHub Pages
 name: Deploy static content to Pages
 
 on:
@@ -25,11 +25,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Single deploy job since we're just deploying
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  # Build job (separated from deploy so the artifact is visible in the GitHub Artifacts API
+  # before actions/deploy-pages queries it — see actions/deploy-pages#451 — and so failed
+  # deploy jobs can be re-run without uploading duplicate "github-pages" artifacts)
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -91,6 +90,14 @@ jobs:
         with:
           path: 'web/dist'
 
+  # Deployment job
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

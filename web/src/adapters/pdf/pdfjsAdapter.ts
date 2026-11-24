@@ -1,17 +1,28 @@
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist/types/src/display/api';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfjsWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
+import type {
+  PDFDocumentLoadingTask,
+  PDFDocumentProxy,
+  RenderTask,
+} from 'pdfjs-dist/types/src/display/api';
 import type { PdfPageRenderer, PdfTextSpan, RenderedPageDimensions } from './types';
 
 // Configure local static bundled PDF.js worker (zero external CDN requests)
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
 export class PdfJsPageRenderer implements PdfPageRenderer {
+  private loadGen = 0;
+  private loadingTask: PDFDocumentLoadingTask | null = null;
   private doc: PDFDocumentProxy | null = null;
   private readonly activeTasks = new Map<number, RenderTask>();
 
   async load(bytes: Uint8Array): Promise<{ pageCount: number }> {
-    await this.destroy();
+    const gen = ++this.loadGen;
+    await this.cleanupCurrent();
+    if (gen !== this.loadGen) {
+      throw new Error('PDF load superseded');
+    }
+
     // Pass an independent copy so PDF.js worker transfer never detaches caller's bytes
     const copy = new Uint8Array(bytes.byteLength);
     copy.set(bytes);
@@ -20,8 +31,22 @@ export class PdfJsPageRenderer implements PdfPageRenderer {
       data: copy,
       useSystemFonts: true,
     });
-    this.doc = await loadingTask.promise;
-    return { pageCount: this.doc.numPages };
+    this.loadingTask = loadingTask;
+    try {
+      const doc = await loadingTask.promise;
+      if (gen !== this.loadGen || this.loadingTask !== loadingTask) {
+        await loadingTask.destroy().catch(() => {});
+        throw new Error('PDF load superseded');
+      }
+      this.doc = doc;
+      return { pageCount: this.doc.numPages };
+    } catch (err) {
+      if (this.loadingTask === loadingTask) {
+        this.loadingTask = null;
+      }
+      await loadingTask.destroy().catch(() => {});
+      throw err;
+    }
   }
 
   async renderPage(
@@ -54,14 +79,8 @@ export class PdfJsPageRenderer implements PdfPageRenderer {
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('2D canvas context unavailable');
-    }
-
     const transform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined;
     const renderTask = page.render({
-      canvasContext: ctx,
       canvas,
       viewport,
       transform,
@@ -110,6 +129,11 @@ export class PdfJsPageRenderer implements PdfPageRenderer {
   }
 
   async destroy(): Promise<void> {
+    this.loadGen++;
+    await this.cleanupCurrent();
+  }
+
+  private async cleanupCurrent(): Promise<void> {
     for (const task of this.activeTasks.values()) {
       try {
         task.cancel();
@@ -118,9 +142,11 @@ export class PdfJsPageRenderer implements PdfPageRenderer {
       }
     }
     this.activeTasks.clear();
-    if (this.doc) {
-      await this.doc.destroy();
-      this.doc = null;
+    const loadingTask = this.loadingTask ?? this.doc?.loadingTask ?? null;
+    this.loadingTask = null;
+    this.doc = null;
+    if (loadingTask) {
+      await loadingTask.destroy();
     }
   }
 }

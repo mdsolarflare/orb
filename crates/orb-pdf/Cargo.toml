@@ -20,6 +20,9 @@ sha2.workspace = true
 rsa.workspace = true
 p256.workspace = true
 p384.workspace = true
+# Enables `ecdsa/der` via feature unification for p256/p384 DER signature decoding
 ecdsa.workspace = true
 signature.workspace = true
+
+[dev-dependencies]
 rand_chacha.workspace = true
