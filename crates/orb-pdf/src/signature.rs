@@ -6,12 +6,12 @@ use cms::signed_data::{SignedData, SignerIdentifier};
 use der::{Decode, Encode};
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use rsa::pss::{Signature as PssSignature, VerifyingKey as PssVerifyingKey};
-use rsa::RsaPublicKey;
+use rsa::PublicKey as RsaPublicKey;
+use rsa::pkcs8::DecodePublicKey;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use signature::Verifier;
-use spki::DecodePublicKey;
 use x509_cert::Certificate;
 
 use crate::forms::PdfPageMetrics;
@@ -863,4 +863,121 @@ fn bytes_to_colon_hex(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02X}"))
         .collect::<Vec<_>>()
         .join(":")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use p384::ecdsa::{Signature as P384Sig, SigningKey as P384SigningKey};
+    use p384::pkcs8::EncodePublicKey as P384EncodePublicKey;
+    use rand_chacha::ChaCha20Rng;
+    use rand_chacha::rand_core::SeedableRng;
+    use rsa::PrivateKey as RsaPrivateKey;
+    use rsa::pkcs1v15::SigningKey as RsaPkcs1SigningKey;
+    use rsa::pss::SigningKey as RsaPssSigningKey;
+    use signature::{RandomizedSigner, SignatureEncoding, Signer};
+
+    #[test]
+    fn verifies_p384_rsa_pss_and_rsa_sha1_sha384_paths() {
+        let msg = b"orb pdf signature verification payload";
+        let tampered = b"orb pdf signature verification TAMPERED";
+
+        // 1. P-384 ECDSA (DER and raw)
+        let p384_sk = P384SigningKey::from_bytes(&[0x33u8; 48].into()).expect("P-384 key");
+        let p384_spki = p384_sk
+            .verifying_key()
+            .to_public_key_der()
+            .expect("P-384 SPKI DER");
+        let p384_sig: P384Sig = p384_sk.sign(msg);
+        assert!(matches!(
+            verify_cms_signature(
+                p384_spki.as_bytes(),
+                "2.16.840.1.101.3.4.2.2", // SHA-384
+                "1.2.840.10045.4.3.3",    // ecdsa-with-SHA384
+                msg,
+                p384_sig.to_der().as_bytes(),
+            ),
+            VerifyOutcome::Valid
+        ));
+        assert!(matches!(
+            verify_cms_signature(
+                p384_spki.as_bytes(),
+                "2.16.840.1.101.3.4.2.2",
+                "1.2.840.10045.2.1", // generic id-ecPublicKey
+                msg,
+                &p384_sig.to_bytes(),
+            ),
+            VerifyOutcome::Valid
+        ));
+        assert!(matches!(
+            verify_cms_signature(
+                p384_spki.as_bytes(),
+                "2.16.840.1.101.3.4.2.2",
+                "1.2.840.10045.4.3.3",
+                tampered,
+                p384_sig.to_der().as_bytes(),
+            ),
+            VerifyOutcome::Invalid
+        ));
+
+        // 2. RSA-2048: PSS (SHA-256) + PKCS#1 v1.5 (SHA-1 & SHA-384)
+        let mut rng = ChaCha20Rng::from_seed([0xA5u8; 32]);
+        let rsa_sk = RsaPrivateKey::new(&mut rng, 2048).expect("RSA-2048 keygen");
+        let rsa_spki = rsa_sk
+            .to_public_key()
+            .to_public_key_der()
+            .expect("RSA SPKI DER");
+
+        // RSA-PSS with SHA-256
+        let pss_sk = RsaPssSigningKey::<Sha256>::new(rsa_sk.clone());
+        let pss_sig = pss_sk.sign_with_rng(&mut rng, msg);
+        assert!(matches!(
+            verify_cms_signature(
+                rsa_spki.as_bytes(),
+                "2.16.840.1.101.3.4.2.1", // SHA-256
+                "1.2.840.113549.1.1.10",  // id-RSASSA-PSS
+                msg,
+                &pss_sig.to_bytes(),
+            ),
+            VerifyOutcome::Valid
+        ));
+        assert!(matches!(
+            verify_cms_signature(
+                rsa_spki.as_bytes(),
+                "2.16.840.1.101.3.4.2.1",
+                "1.2.840.113549.1.1.10",
+                tampered,
+                &pss_sig.to_bytes(),
+            ),
+            VerifyOutcome::Invalid
+        ));
+
+        // RSA PKCS#1 v1.5 with SHA-1
+        let sha1_sk = RsaPkcs1SigningKey::<sha1::Sha1>::new(rsa_sk.clone());
+        let sha1_sig = sha1_sk.sign(msg);
+        assert!(matches!(
+            verify_cms_signature(
+                rsa_spki.as_bytes(),
+                "1.3.14.3.2.26",        // SHA-1
+                "1.2.840.113549.1.1.1", // rsaEncryption
+                msg,
+                &sha1_sig.to_bytes(),
+            ),
+            VerifyOutcome::Valid
+        ));
+
+        // RSA PKCS#1 v1.5 with SHA-384
+        let sha384_sk = RsaPkcs1SigningKey::<Sha384>::new(rsa_sk);
+        let sha384_sig = sha384_sk.sign(msg);
+        assert!(matches!(
+            verify_cms_signature(
+                rsa_spki.as_bytes(),
+                "2.16.840.1.101.3.4.2.2", // SHA-384
+                "1.2.840.113549.1.1.12",  // sha384WithRSAEncryption
+                msg,
+                &sha384_sig.to_bytes(),
+            ),
+            VerifyOutcome::Valid
+        ));
+    }
 }

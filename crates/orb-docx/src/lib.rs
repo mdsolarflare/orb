@@ -237,4 +237,91 @@ mod tests {
         );
         assert_eq!(parsed.assets.len(), 1);
     }
+
+    #[test]
+    fn docx_unescapes_xml_entities_char_refs_and_cdata() {
+        use std::io::{Cursor, Write};
+        use zip::ZipWriter;
+        use zip::write::SimpleFileOptions;
+
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut cursor);
+            let opts = SimpleFileOptions::default();
+
+            zip.start_file("docProps/core.xml", opts).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+                   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:title>R&amp;D &lt;2026&gt; <ext>Nested</ext> &#x2014; &quot;Orb&quot; &apos;v1&apos;</dc:title>
+  <dc:creator><![CDATA[Alice & Bob]]></dc:creator>
+  <dc:subject>A &#38; B</dc:subject>
+</cp:coreProperties>"#,
+            )
+            .unwrap();
+
+            zip.start_file("word/_rels/document.xml.rels", opts)
+                .unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.org/q?a=1&amp;b=2" TargetMode="External"/>
+</Relationships>"#,
+            )
+            .unwrap();
+
+            zip.start_file("word/document.xml", opts).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:r><w:t>5 &lt; 10 &amp; 10 &gt; 5 &#x2014; &quot;ok&quot; &apos;yes&apos; &#38; &custom; <![CDATA[<raw>&]]></w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:hyperlink r:id="rId1"><w:r><w:t>Query &amp; Link</w:t></w:r></w:hyperlink>
+    </w:p>
+  </w:body>
+</w:document>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let parsed = parse_docx(&cursor.into_inner(), Some("entities.docx"))
+            .expect("parse_docx should handle entities, char refs, and CDATA");
+
+        assert_eq!(
+            parsed.title.as_deref(),
+            Some("R&D <2026> Nested \u{2014} \"Orb\" 'v1'")
+        );
+        assert_eq!(parsed.metadata.author.as_deref(), Some("Alice & Bob"));
+        assert_eq!(parsed.metadata.subject.as_deref(), Some("A & B"));
+
+        assert_eq!(parsed.blocks.len(), 2);
+        match &parsed.blocks[0].kind {
+            BlockKind::Paragraph { runs, .. } => {
+                assert_eq!(runs.len(), 1);
+                assert_eq!(
+                    runs[0].text,
+                    "5 < 10 & 10 > 5 \u{2014} \"ok\" 'yes' & &custom; <raw>&"
+                );
+            }
+            other => panic!("expected first paragraph, got {other:?}"),
+        }
+        match &parsed.blocks[1].kind {
+            BlockKind::Paragraph { runs, .. } => {
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].text, "Query & Link");
+                assert_eq!(
+                    runs[0].style.href.as_deref(),
+                    Some("https://example.org/q?a=1&b=2")
+                );
+            }
+            other => panic!("expected hyperlink paragraph, got {other:?}"),
+        }
+    }
 }

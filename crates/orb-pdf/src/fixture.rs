@@ -10,9 +10,10 @@ use const_oid::ObjectIdentifier;
 use der::asn1::{BitString, OctetString, SetOfVec, UtcTime};
 use der::{Any, Decode, Encode};
 use p256::ecdsa::{DerSignature as P256DerSig, SigningKey as P256SigningKey};
+use p256::pkcs8::EncodePublicKey;
 use sha2::{Digest, Sha256};
 use signature::Signer;
-use spki::{AlgorithmIdentifierOwned, EncodePublicKey, SubjectPublicKeyInfoOwned};
+use spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
 use x509_cert::attr::{Attribute, Attributes};
 use x509_cert::name::Name;
 use x509_cert::serial_number::SerialNumber;
@@ -669,7 +670,7 @@ mod tests {
         use rand_chacha::ChaCha20Rng;
         use rand_chacha::rand_core::SeedableRng;
         use rsa::pkcs1v15::SigningKey as RsaSigningKey;
-        use rsa::RsaPrivateKey;
+        use rsa::PrivateKey as RsaPrivateKey;
         use signature::SignatureEncoding;
 
         let mut rng = ChaCha20Rng::from_seed([0x5Au8; 32]);

@@ -28,25 +28,26 @@ serde_json = "1.0"
 thiserror = "2.0"
 base64 = "0.22"
 pulldown-cmark = { version = "0.13", default-features = false }
-quick-xml = "0.37"
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+quick-xml = "0.42"
+zip = { version = "9.8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 cfb = "0.11"
-lopdf = { version = "0.36", default-features = false }
+lopdf = { version = "0.47", default-features = false }
 
 # Pure-Rust RustCrypto stack for PDF CMS/PKCS#7 & X.509 signature verification
+# Note: cms has no stable 0.3 release yet, so cms/x509-cert/der/const-oid/spki remain on 0.2/0.7/0.9.
 cms = { version = "0.2.3", default-features = false, features = ["alloc", "std"] }
 x509-cert = { version = "0.2.5", default-features = false, features = ["std", "pem"] }
 der = { version = "0.7", features = ["alloc", "std", "oid", "pem"] }
 const-oid = { version = "0.9", features = ["db"] }
 spki = { version = "0.7", features = ["std"] }
-sha1 = { version = "0.10", features = ["oid"] }
-sha2 = { version = "0.10", features = ["oid"] }
-rsa = { version = "0.9.10", default-features = false, features = ["std", "sha1", "sha2", "u64_digit"] }
-p256 = { version = "0.13.2", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "std", "sha256"] }
-p384 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "std", "sha384"] }
-ecdsa = { version = "0.16", features = ["der", "verifying"] }
-signature = "2.2"
-rand_chacha = "0.3"
+sha1 = { version = "0.11", features = ["oid"] }
+sha2 = { version = "0.11", features = ["oid"] }
+rsa = { version = "0.10", default-features = false, features = ["std", "encoding", "pkcs1v15", "sha1"] }
+p256 = { version = "0.14.0", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "std", "sha256"] }
+p384 = { version = "0.14.0", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "std", "sha384"] }
+ecdsa = { version = "0.17", features = ["der"] }
+signature = "3.0"
+rand_chacha = "0.10"
 
 # WASM boundary (used only by orb-wasm)
 wasm-bindgen = "0.2.130"
