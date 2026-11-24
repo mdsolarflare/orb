@@ -1,0 +1,10 @@
+[package]
+name = "orb-doc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+orb-ir.workspace = true
+cfb.workspace = true
+thiserror.workspace = true

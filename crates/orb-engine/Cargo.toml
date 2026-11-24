@@ -1,0 +1,18 @@
+[package]
+name = "orb-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+orb-ir.workspace = true
+orb-md.workspace = true
+orb-docx.workspace = true
+orb-doc.workspace = true
+orb-pdf.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
