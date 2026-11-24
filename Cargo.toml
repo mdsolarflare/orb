@@ -45,7 +45,7 @@ rsa = { version = "0.9.10", default-features = false, features = ["std", "sha1",
 p256 = { version = "0.13.2", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "std", "sha256"] }
 p384 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "std", "sha384"] }
 ecdsa = { version = "0.16", features = ["der", "verifying"] }
-signature = "2.2"
+signature = "3.0"
 rand_chacha = "0.3"
 
 # WASM boundary (used only by orb-wasm)
